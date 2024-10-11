@@ -1,0 +1,511 @@
+#!/bin/bash
+
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to display usage instructions
+usage() {
+    echo "Usage:"
+    echo "  flyflask [options]                                   # Perform actions like deactivating or activating the virtual environment"
+    echo ""
+    echo "Options:"
+    echo "  -dvenv                       Deactivate the current virtual environment"
+    echo "  -avenv                       Activate the virtual environment"
+    echo "  -pt <port>, --port <port>    Set the port (default: 8080)"
+    echo "  -ht <host>, --host <host>    Set the host (default: 0.0.0.0)"
+    echo "  -h, --help                   Display this help message"
+    echo ""
+    echo "  flyflask init <project_directory> <app_name> [options]          # Initialize and activate a project"
+    echo ""
+    echo "Options:"
+    echo "  -fp, --full-production       Initialize a full production ready project"
+    echo "  -venv                        Create virtual environment"
+    echo "  -sn, --sessions              Use flask_sessions"
+    echo "  -dk, --docker                Create Docker file"
+    echo "  -gd, --git-deploy            Create a git deployment workflow"
+    echo "  -gi, --git-ignore            Create .gitignore file"
+    echo "  -pt <port>, --port <port>    Set the port (default: 8080)"
+    echo "  -ht <host>, --host <host>    Set the host (default: 0.0.0.0)"
+    return 0  # Indicate successful execution
+}
+
+# Ensure the script is being sourced
+sourced=0
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+    sourced=1
+fi
+
+# If not sourced, inform the user and exit
+if [ $sourced -ne 1 ]; then
+    echo "Error: This script must be sourced. Use 'flask-init [args]'"
+    exit 1
+fi
+
+# Initialize variables
+DEACTIVATE_VENV=0
+ACTIVATE_VENV=0
+ENVIRONMENT="development"
+PORT=8080
+HOST="0.0.0.0"
+PROJECT_DIR=""
+PAGES=()
+
+# Parse options using a loop
+while [[ $# -gt 0 ]]; do
+    key="$1"
+
+    case $key in
+        -dvenv)
+            DEACTIVATE_VENV=1
+            shift
+            ;;
+        -avenv)
+            ACTIVATE_VENV=1
+            shift
+            ;;
+        -pt|--port)
+            shift
+            PORT="$1"
+            shift
+            ;;
+        -ht|--host)
+            shift
+            HOST="$1"
+            shift
+            ;;
+        -h|--help)
+            usage
+            return 0
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            usage
+            return 1
+            ;;
+        *)
+            if [ -z "$PROJECT_DIR" ]; then
+                PROJECT_DIR="$1"
+                shift
+            else
+                echo "Error: Multiple project directories specified."
+                usage
+                return 1
+            fi
+            ;;
+    esac
+done
+
+# Handle deactivation
+if [ $DEACTIVATE_VENV -eq 1 ]; then
+    if [[ "$VIRTUAL_ENV" != "" ]]; then
+        deactivate
+        echo "Virtual environment deactivated."
+    else
+        echo "No virtual environment is currently active."
+    fi
+    # If only deactivation is requested, exit the script
+    if [ -z "$PROJECT_DIR" ]; then
+        return
+    fi
+fi
+
+# Handle activation
+if [ $ACTIVATE_VENV -eq 1 ]; then
+    if [ ! -f .venv/bin/activate ]; then
+        echo "No (.venv) virtual environment found!"
+        return
+    fi
+    if [[ "$VIRTUAL_ENV" == "" ]]; then
+        source .venv/bin/activate
+        echo "Virtual environment activated."
+    else
+        echo "A virtual environment is already active."
+    fi
+    # If only activation is requested, exit the script
+    if [ -z "$PROJECT_DIR" ]; then
+        return
+    fi
+fi
+
+# Determine if initialization is requested
+if [ -n "$PROJECT_DIR" ]; then
+    echo "Initializing Flask project in directory: $PROJECT_DIR"
+
+    # Handle absolute and relative paths
+    if [[ "$PROJECT_DIR" = /* ]]; then
+        ABS_PROJECT_DIR="$PROJECT_DIR"
+    else
+        ABS_PROJECT_DIR="$(pwd)/$PROJECT_DIR"
+    fi
+
+    # Check if the project directory already exists
+    if [ -d "$ABS_PROJECT_DIR" ]; then
+        echo "Directory '$ABS_PROJECT_DIR' already exists."
+        # Check if the directory is empty
+        if [ "$(ls -A "$ABS_PROJECT_DIR")" ]; then
+            echo "Directory '$ABS_PROJECT_DIR' is not empty."
+
+            # Check if it's an existing Flask project
+            if [ -f "$ABS_PROJECT_DIR/app/app.py" ] && [ -d "$ABS_PROJECT_DIR/.venv" ]; then
+                echo "It appears to be an existing Flask project."
+                echo "Initialization aborted to prevent overwriting existing project."
+                return 1
+            else
+                echo "Warning: Directory is not empty but does not appear to be a Flask project."
+                echo "Proceeding with initialization may overwrite existing files."
+                echo "Do you want to continue? (y/n)"
+                read -r response
+                case "$response" in
+                    [Yy]* ) echo "Proceeding with initialization." ;;
+                    * ) echo "Initialization aborted." ; return 1 ;;
+                esac
+            fi
+        else
+            echo "Using existing empty directory '$ABS_PROJECT_DIR' as project root."
+        fi
+    else
+        # Create project directory
+        mkdir -p "$ABS_PROJECT_DIR"
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to create directory '$ABS_PROJECT_DIR'."
+            return 1
+        fi
+        echo "Created project directory at '$ABS_PROJECT_DIR'."
+    fi
+
+    cd "$ABS_PROJECT_DIR" || { echo "Error: Failed to enter directory '$ABS_PROJECT_DIR'."; return 1; }
+
+    # Initialize README.md
+    if [ ! -f "README.md" ]; then
+        echo "# $PROJECT_DIR" > README.md
+        echo "Project initialized by flask-init script." >> README.md
+        echo "Created README.md."
+    else
+        echo "README.md already exists. Skipping creation."
+    fi
+
+    # Create and activate virtual environment if not already active
+    if [ ! -d ".venv" ]; then
+        python3 -m venv .venv
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to create virtual environment."
+            return 1
+        fi
+        echo "Created virtual environment in '.venv/'."
+    else
+        echo "Virtual environment '.venv/' already exists."
+    fi
+
+    # Activate the virtual environment
+    source .venv/bin/activate
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to activate virtual environment."
+        return 1
+    fi
+    echo "Virtual environment activated."
+
+    # Upgrade pip to the latest version
+    pip install --upgrade pip
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to upgrade pip."
+        deactivate
+        return 1
+    fi
+    echo "Upgraded pip."
+
+    # Install Flask and Loguru
+    pip install Flask loguru
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to install Flask and Loguru."
+        deactivate
+        return 1
+    fi
+    echo "Installed Flask and Loguru."
+
+    # Freeze requirements
+    pip freeze > requirements.txt
+    echo "Generated requirements.txt."
+
+    # Create project structure
+    mkdir -p app/templates app/static/css app/static/js logs
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to create project structure."
+        deactivate
+        return 1
+    fi
+    chmod 700 logs
+    echo "Created project structure."
+
+    # Create logs/app.log file with secure permissions
+    if [ ! -f "logs/app.log" ]; then
+        touch logs/app.log
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to create 'logs/app.log' file."
+            deactivate
+            return 1
+        fi
+        chmod 600 logs/app.log
+        echo "Created 'logs/app.log' file with permissions 600."
+    else
+        echo "'logs/app.log' file already exists."
+    fi
+
+    # Prepare buttons HTML for index.html
+    BUTTONS=""
+    for page in "${PAGES[@]}"; do
+        BUTTONS+="        <button onclick=\"window.location.href='/$page'\">$page</button>\n"
+    done
+
+    # Create app/app.py with logging configuration using Loguru
+    cat <<EOF > app/app.py
+from flask import Flask, render_template
+from loguru import logger
+import os
+
+app = Flask(__name__)
+
+# Configure Loguru
+logger.remove()  # Remove default logger
+logger.add("../logs/app.log", rotation="10 MB", retention=10, level="INFO",
+           format="{time:YYYY-MM-DD HH:mm:ss} {level} {message} [in {file}:{line}]")
+
+logger.info("Flask application startup")
+
+@app.route("/")
+def home():
+    logger.info("Home page accessed")
+    return render_template("index.html")
+EOF
+
+    echo "Created app/app.py with logging configuration."
+
+    # Add routes for additional pages
+    for page in "${PAGES[@]}"; do
+        # Sanitize page name to ensure it's a valid function name
+        sanitized_page=$(echo "$page" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_')
+        if [ -z "$sanitized_page" ]; then
+            echo "Error: Invalid page name '$page'. Page names must contain alphanumeric characters or underscores."
+            deactivate
+            return 1
+        fi
+        cat <<EOF >> app/app.py
+
+@app.route("/$page")
+def $sanitized_page():
+    logger.info("$page page accessed")
+    return render_template("$page.html")
+EOF
+    done
+
+    # Add error route and main block
+    cat <<EOF >> app/app.py
+
+@app.route("/error")
+def error():
+    logger.error("An intentional error occurred")
+    # This route is just for demonstrating error logging
+    raise Exception("Intentional Error")
+
+if __name__ == "__main__":
+    # Ensure log file permissions are secure
+    try:
+        os.chmod('../logs/app.log', 0o600)
+        logger.info("Log file permissions set to 600.")
+    except Exception as e:
+        logger.error(f"Failed to set log file permissions: {e}")
+
+    # Get the port and host from the variables
+    port = int(os.environ.get('PORT', $PORT))
+    host = os.environ.get('HOST', '$HOST')
+    # Get the environment (default to 'development')
+    env = os.environ.get('FLASK_ENV', '$ENVIRONMENT')
+    if env not in ['development', 'production']:
+        raise EnvironmentError(f"Invalid environment type provided. Expected 'development' or 'production', got {env}.")
+    # Enable debug mode if in development environment
+    debug_mode = env == 'development'
+    app.run(host=host, port=port, debug=debug_mode)
+EOF
+
+    echo "Added error route and main block to app/app.py."
+
+    # Create base.html template
+    cat <<EOF > app/templates/base.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ title if title else "Flask App" }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    {% block content %}{% endblock %}
+    <script src="{{ url_for('static', filename='js/index.js') }}"></script>
+</body>
+</html>
+EOF
+    echo "Created base.html."
+
+    # Create index.html template with buttons
+    cat <<EOF > app/templates/index.html
+{% extends "base.html" %}
+
+{% block content %}
+    <h1>Hello, World!</h1>
+    <p>Welcome to your Flask app.</p>
+$BUTTONS
+{% endblock %}
+EOF
+    echo "Created index.html with navigation buttons."
+
+    # Create additional page templates and JS files
+    for page in "${PAGES[@]}"; do
+        # Create <page>.html template
+        cat <<EOF > app/templates/"$page".html
+{% extends "base.html" %}
+
+{% block content %}
+    <h1>Welcome to the $page page!</h1>
+    <p>This is the $page page.</p>
+{% endblock %}
+EOF
+        echo "Created $page.html."
+
+        # Create <page>.js file
+        cat <<EOF > app/static/js/"$page".js
+console.log("Hello from $page.js!");
+EOF
+        echo "Created $page.js."
+    done
+
+    # Create index.js with basic JavaScript
+    cat <<EOF > app/static/js/index.js
+console.log("Hello from index.js!");
+EOF
+    echo "Created index.js."
+
+    # Create style.css with basic styles
+    cat <<EOF > app/static/css/style.css
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f4f4f4;
+}
+
+h1 {
+    color: #333;
+}
+
+button {
+    margin: 5px;
+    padding: 10px 20px;
+    font-size: 16px;
+    cursor: pointer;
+}
+EOF
+    echo "Created style.css."
+
+    # Generate project structure for README.md
+    echo "Generating project structure for README.md..."
+    # Build the directory tree manually
+    TREE_OUTPUT="$PROJECT_DIR/
+├── README.md
+├── requirements.txt
+├── .venv/
+├── logs/
+│   └── app.log
+├── app/
+    ├── app.py
+    ├── templates/
+    │   ├── base.html
+    │   ├── index.html"
+
+    for page in "${PAGES[@]}"; do
+        TREE_OUTPUT+="
+    │   ├── $page.html"
+    done
+
+    TREE_OUTPUT+="
+    ├── static/
+        ├── css/
+        │   └── style.css
+        ├── js/
+            ├── index.js"
+
+    for page in "${PAGES[@]}"; do
+        TREE_OUTPUT+="
+            ├── $page.js"
+    done
+
+    # Append project structure description to README.md
+    cat <<EOF >> README.md
+
+## Project Structure
+
+\`\`\`
+$TREE_OUTPUT
+\`\`\`
+
+## Description
+
+- **app/**: Contains the Flask application.
+  - **app.py**: The main Flask application file.
+  - **templates/**: HTML templates for rendering pages.
+  - **static/**: Static files like CSS and JavaScript.
+- **requirements.txt**: Lists the Python packages required for the project.
+- **.venv/**: The Python virtual environment directory (hidden).
+- **logs/**: Contains application logs.
+
+## How to Run
+
+1. Activate the virtual environment:
+
+   \`\`\`bash
+   source .venv/bin/activate
+   \`\`\`
+
+2. Navigate to the app directory:
+
+   \`\`\`bash
+   cd app
+   \`\`\`
+
+3. Run the Flask application:
+
+   \`\`\`bash
+   python app.py
+   \`\`\`
+
+4. Open your browser and go to \`http://$HOST:$PORT/\`.
+
+## How to Deactivate the Virtual Environment
+
+To deactivate the virtual environment, run:
+
+\`\`\`bash
+deactivate
+\`\`\`
+
+EOF
+
+    echo "Updated README.md with project structure and description."
+
+    # Deactivate the virtual environment after initialization (if specified)
+    if [ $DEACTIVATE_VENV -eq 1 ]; then
+        deactivate
+        echo "Virtual environment deactivated after project setup."
+    else
+        echo "Virtual environment remains active after project setup."
+    fi
+
+    echo "Flask project '$PROJECT_DIR' has been initialized successfully."
+    echo "To start the Flask app, run: python app/app.py"
+
+    if [ $DEACTIVATE_VENV -ne 1 ]; then
+        echo "To deactivate the virtual environment, run: flask-init -dvenv"
+    else
+        echo "To activate the virtual environment, run: flask-init -avenv"
+    fi
+fi
